@@ -51,9 +51,10 @@ if [[ "${WS_WARP_FORCE:-0}" != "1" && "$(hconfig warp_mode disable)" == "disable
     exit 0
 fi
 
-if [ ! -x "$BIN" ]; then
-    warning "- The WARP engine is not installed yet, installing it now."
-    bash install.sh || exit 1
+UNIT_DST="${WS_UNIT_DIR:-/etc/systemd/system}/watashi-warp.service"
+if [ ! -x "$BIN" ] || [ ! -f "$UNIT_DST" ] || [[ "$("$BIN" version 2>&1)" != *-ws* && -f "warp-source.conf" ]]; then
+    warning "- The WARP engine or service unit needs installation, installing it now."
+    WS_WARP_FORCE="${WS_WARP_FORCE:-0}" bash install.sh || exit 1
 fi
 
 # engine.conf holds the knobs the Nodes page will drive later. It is written

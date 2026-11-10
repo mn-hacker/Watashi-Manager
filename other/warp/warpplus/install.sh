@@ -24,7 +24,7 @@ UNIT_DST="${WS_UNIT_DIR:-/etc/systemd/system}/watashi-warp.service"
 LOGDIR="${WS_LOG_DIR:-/opt/watashi-manager/log/system}"
 mkdir -p "$LOGDIR" cache
 
-if [[ "$(hconfig warp_mode disable)" == "disable" ]]; then
+if [[ "${WS_WARP_FORCE:-0}" != "1" && "$(hconfig warp_mode disable)" == "disable" ]]; then
     warning "- WARP is disabled in the panel, skipping its installation."
     bash disable.sh
     exit 0
@@ -203,12 +203,20 @@ function install_custom() {
     return 0
 }
 
+function engine_needs_custom_upgrade() {
+    ws_custom_url >/dev/null 2>&1 || return 1
+    [[ "$(engine_version)" == *-ws* ]] && return 1
+    return 0
+}
+
 # 1) the engine
 # watashi v12.2.130: try the custom Watashi-Warp source first, then packages.lock.
-if engine_works; then
+if engine_works && ! engine_needs_custom_upgrade; then
     echo "- WARP engine is already installed: $(engine_version)"
 elif install_custom; then
     success "- Installed the Watashi-Warp engine: $(engine_version)"
+elif engine_works; then
+    echo "- Keeping existing WARP engine: $(engine_version)"
 elif install_pinned; then
     success "- Installed the WARP engine: $(engine_version)"
 else
