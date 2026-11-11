@@ -46,33 +46,89 @@ ws_awg_ready() {
 # the configure step. It does nothing when the module is already installed,
 # when the header is not there, or when compat.h no longer carries the define
 # (an upstream fix), so it is safe to run on every install.
+# watashi v12.3.48b: compat.h can hold a line removed by hand or by an older build of
+# this function, and no header check can tell that a line is missing. Before
+# patching, a file that differs from the one in the package is replaced with
+# the packaged copy, so every patch starts from the original. Does nothing
+# when the file is original, or when the package cannot be downloaded.
+ws_awg_restore_compat() {
+    local src="$1" sums="${WS_AWG_MD5SUMS:-/var/lib/dpkg/info/amneziawg-dkms.md5sums}"
+    local rel want have tmp
+    rel="${src#/}/compat/compat.h"
+    if [ -f "$sums" ]; then
+        want=$(awk -v f="$rel" '$2==f{print $1}' "$sums")
+        have=$(md5sum "$src/compat/compat.h" 2>/dev/null | awk '{print $1}')
+        [ -n "$want" ] && [ "$want" = "$have" ] && return 0
+    fi
+    command -v apt-get >/dev/null 2>&1 || return 0
+    tmp=$(mktemp -d 2>/dev/null) || return 0
+    if (cd "$tmp" && apt-get download amneziawg-dkms >/dev/null 2>&1 &&
+        dpkg-deb -x ./amneziawg-dkms_*.deb "$tmp/x" 2>/dev/null) && [ -f "$tmp/x/$rel" ]; then
+        cp -f "$tmp/x/$rel" "$src/compat/compat.h" 2>/dev/null || true
+    fi
+    rm -rf "$tmp"
+    return 0
+}
+
 ws_awg_heal_dkms() {
-    local kver="${WS_AWG_KVER:-$(uname -r)}"
     command -v dkms >/dev/null 2>&1 || return 0
-    dkms status -m amneziawg -k "$kver" 2>/dev/null | grep -q ': installed' && return 0
-    local hdr="/usr/src/linux-headers-$kver/include/net/udp_tunnel.h"
     local src
     src=$(ls -d /usr/src/amneziawg-* 2>/dev/null | sort -V | tail -n 1)
-    [ -f "$hdr" ] && [ -f "$src/compat/compat.h" ] || return 0
-    local changed=0
-    if grep -Eq 'setup_udp_tunnel_sock\(struct net \*net, struct sock \*sk' "$hdr" \
-        && grep -q '^#define setup_udp_tunnel_sock(' "$src/compat/compat.h"; then
-        sed -i '/^#define setup_udp_tunnel_sock(/d' "$src/compat/compat.h"
-        changed=1
-    fi
-    if grep -Eq 'udp_tunnel_sock_release\(struct sock \*sk' "$hdr" \
-        && grep -q '^#define udp_tunnel_sock_release(' "$src/compat/compat.h"; then
-        sed -i '/^#define udp_tunnel_sock_release(/d' "$src/compat/compat.h"
-        changed=1
-    fi
-    [ "$changed" = 1 ] || return 0
-    ws_awg_say "the amneziawg module does not fit the udp tunnel api of kernel $kver, adjusting its compat header and building it again"
-    DEBIAN_FRONTEND=noninteractive dpkg --configure -a >/dev/null 2>&1
-    if dkms status -m amneziawg -k "$kver" 2>/dev/null | grep -q ': installed'; then
-        ws_awg_say "the amneziawg module is built for kernel $kver now"
+    [ -n "$src" ] && [ -f "$src/compat/compat.h" ] || return 0
+
+    local kvers=() kdir kver hdr need_dpkg=0 changed=0 restored=0
+    if [ -n "${WS_AWG_KVER:-}" ]; then
+        kvers=("$WS_AWG_KVER")
     else
-        ws_awg_say "the amneziawg module still does not build for kernel $kver, see $(ls -d /var/lib/dkms/amneziawg/*/build 2>/dev/null | tail -n 1)/make.log"
+        kvers=("$(uname -r)")
+        for kdir in /usr/src/linux-headers-*; do
+            [ -d "$kdir" ] || continue
+            kver="${kdir#/usr/src/linux-headers-}"
+            [ -f "$kdir/include/net/udp_tunnel.h" ] || [ -f "/lib/modules/$kver/build/include/net/udp_tunnel.h" ] || continue
+            kvers+=("$kver")
+        done
     fi
+
+    for kver in $(printf '%s\n' "${kvers[@]}" | awk '!seen[$0]++'); do
+        dkms status -m amneziawg -k "$kver" 2>/dev/null | grep -q ': installed' && continue
+        hdr="/usr/src/linux-headers-$kver/include/net/udp_tunnel.h"
+        [ -f "$hdr" ] || hdr="/lib/modules/$kver/build/include/net/udp_tunnel.h"
+        [ -f "$hdr" ] || continue
+        need_dpkg=1
+        if [ "$restored" = 0 ]; then
+            ws_awg_restore_compat "$src"
+            restored=1
+        fi
+        if grep -Eq 'setup_udp_tunnel_sock\(struct net \*net, struct sock \*sk' "$hdr" \
+            && grep -q '^#define setup_udp_tunnel_sock(' "$src/compat/compat.h"; then
+            sed -i '/^#define setup_udp_tunnel_sock(/d' "$src/compat/compat.h"
+            changed=1
+        fi
+        if grep -Eq 'udp_tunnel_sock_release\(struct sock \*sk' "$hdr" \
+            && grep -q '^#define udp_tunnel_sock_release(' "$src/compat/compat.h"; then
+            sed -i '/^#define udp_tunnel_sock_release(/d' "$src/compat/compat.h"
+            changed=1
+        fi
+    done
+
+    [ "$changed" = 1 ] || [ "$need_dpkg" = 1 ] || return 0
+    rm -f /var/crash/amneziawg-dkms*.crash 2>/dev/null || true
+    if [ "$changed" = 1 ]; then
+        ws_awg_say "the amneziawg module does not fit the udp tunnel api of the installed kernel headers, adjusting its compat header and building it again"
+    fi
+    DEBIAN_FRONTEND=noninteractive dpkg --configure -a >/dev/null 2>&1 || true
+    for kver in $(printf '%s\n' "${kvers[@]}" | awk '!seen[$0]++'); do
+        [ -d "/usr/src/linux-headers-$kver" ] || [ -d "/lib/modules/$kver/build" ] || continue
+        if ! dkms status -m amneziawg -k "$kver" 2>/dev/null | grep -q ': installed'; then
+            dkms autoinstall -k "$kver" >/dev/null 2>&1 || true
+        fi
+        if dkms status -m amneziawg -k "$kver" 2>/dev/null | grep -q ': installed'; then
+            [ "$changed" = 1 ] && ws_awg_say "the amneziawg module is built for kernel $kver now"
+        else
+            ws_awg_say "the amneziawg module still does not build for kernel $kver, see $(ls -d /var/lib/dkms/amneziawg/*/build 2>/dev/null | tail -n 1)/make.log"
+        fi
+    done
+    DEBIAN_FRONTEND=noninteractive dpkg --configure -a >/dev/null 2>&1 || true
     return 0
 }
 

@@ -4,6 +4,9 @@ cd $(dirname -- "$0")
 source utils.sh
 
 if [ "$DO_NOT_INSTALL" != "true" ]; then
+    if [ -f ../other/amnezia/awg_utils.sh ]; then
+        (source ../other/amnezia/awg_utils.sh && ws_awg_heal_dkms) 2>/dev/null || true
+    fi
     # Update apt cache once at the start
     apt update -y 2>/dev/null || true
 

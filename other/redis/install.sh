@@ -41,7 +41,7 @@ fi
 
 if ! grep -q "^requirepass" "redis.conf"; then
     # Generate a random password
-    random_password=$(< /dev/urandom tr -dc 'a-zA-Z0-9' | head -c49; echo)
+    random_password=$(< /dev/urandom tr -dc 'a-zA-Z0-9' 2>/dev/null | head -c49; echo)
     # Add requirepass with the generated password to redis.conf
     echo "requirepass $random_password" >>redis.conf   
     systemctl disable --now redis-server >/dev/null 2>&1

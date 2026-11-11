@@ -287,12 +287,18 @@ function is_installed_package() {
     # Extract package name and version from the package specification
     package_name=$(echo "$1" | cut -d'=' -f1)
     version=$(echo "$1" | cut -s -d'=' -f2)
-    if dpkg -l | grep -qE "^ii  $package_name *$version"; then
+    if dpkg -l | grep -qE "^ii  $package_name(:[a-z0-9]+)? *$version"; then
         return 0
-    else
-        echo "$package_name version $version is not installed."
-        return 1
     fi
+    if [ -z "$version" ]; then
+        case "$package_name" in
+        dnsutils)
+            dpkg -l | grep -qE "^ii  bind9-dnsutils(:[a-z0-9]+)? " && return 0
+            ;;
+        esac
+    fi
+    echo "$package_name version $version is not installed."
+    return 1
 }
 
 # ============================================================
