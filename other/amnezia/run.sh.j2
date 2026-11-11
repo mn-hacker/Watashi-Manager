@@ -14,6 +14,8 @@ if [ ! -f "$AWG_CONF" ]; then
 fi
 
 umask 077
+sed -i '/^Post\(Up\|Down\)[[:space:]]*=/{ /||[[:space:]]*true[[:space:]]*$/! s/$/ 2>\/dev\/null || true/ }' "$AWG_CONF" 2>/dev/null || true
+sysctl -q -w net.ipv6.conf.all.disable_ipv6=0 net.ipv6.conf.default.disable_ipv6=0 "net.ipv6.conf.${SERVER_AWG_NIC}.disable_ipv6=0" 2>/dev/null || true
 
 # watashi v12.2.130am: the addresses come from amnezia_ipv4/ipv6 through the
 # panel dump (awg_ipv4/awg_ipv6). An older dump has neither, and then

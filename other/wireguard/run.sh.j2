@@ -1,5 +1,15 @@
 source ./wg_utils.sh
 
+if [ ! -f "/etc/wireguard/${SERVER_WG_NIC}.conf" ]; then
+    bash install.sh
+fi
+
+# Heal existing config files created before v12.3.47b so apply_configs (DO_NOT_INSTALL=true)
+# also fixes PostDown Bad rule errors and udev IPv6 disable on watashiwg.
+sed -i "/net\.ipv6\.conf\.${SERVER_WG_NIC}\.disable_ipv6/d" /etc/sysctl.d/watashi-ipv6.conf 2>/dev/null || true
+sysctl -q -w net.ipv6.conf.all.disable_ipv6=0 net.ipv6.conf.default.disable_ipv6=0 "net.ipv6.conf.${SERVER_WG_NIC}.disable_ipv6=0" 2>/dev/null || true
+sed -i '/^Post\(Up\|Down\)[[:space:]]*=/{ /||[[:space:]]*true[[:space:]]*$/! s/$/ 2>\/dev\/null || true/ }' "/etc/wireguard/${SERVER_WG_NIC}.conf" 2>/dev/null || true
+
 sed -i '/\[Peer\]/,$d' /etc/wireguard/${SERVER_WG_NIC}.conf
 chmod 660 /etc/wireguard/${SERVER_WG_NIC}.conf
 
@@ -14,6 +24,8 @@ AllowedIPs = ${CLIENT_WG_IPV4}/32,${CLIENT_WG_IPV6}/128\n" >>"/etc/wireguard/${S
 
 {% endfor %}
 
-wg syncconf "${SERVER_WG_NIC}" <(wg-quick strip "${SERVER_WG_NIC}")
-
-systemctl restart "wg-quick@${SERVER_WG_NIC}"
+if systemctl is-active --quiet "wg-quick@${SERVER_WG_NIC}" && wg syncconf "${SERVER_WG_NIC}" <(wg-quick strip "${SERVER_WG_NIC}") 2>/dev/null; then
+    echo "wireguard: the peer list was synced without dropping ${SERVER_WG_NIC}"
+else
+    systemctl restart "wg-quick@${SERVER_WG_NIC}"
+fi

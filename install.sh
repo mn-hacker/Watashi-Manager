@@ -85,6 +85,10 @@ function main() {
 
     export USE_VENV=313
 
+    if [ "$MODE" != "docker" ]; then
+        systemctl daemon-reload 2>/dev/null || true
+    fi
+
     # Check system resources and create swap if needed (BEFORE any installs)
     check_system_resources
 

@@ -259,6 +259,21 @@ function ws_http_challenge_cleanup() {
     ) 9>"$WS_STATE_DIR/challenge.lock"
 }
 
+function ws_alpn_challenge_prepare() {
+    local cfg="/opt/watashi-manager/haproxy/haproxy.cfg"
+    mkdir -p "$WS_STATE_DIR" 2>/dev/null || true
+    if [ -s "$cfg" ] && ! grep -q "backend acme_alpn" "$cfg" 2>/dev/null; then
+        (
+            flock -w 30 9 || true
+            if ! grep -q "backend acme_alpn" "$cfg" 2>/dev/null; then
+                sed -i '/tcp-request content accept if { req.ssl_hello_type 1 }/a\    use_backend acme_alpn if { req.ssl_alpn acme-tls/1 }' "$cfg" 2>/dev/null || true
+                printf '\nbackend acme_alpn\n    server acme 127.0.0.1:10443\n' >>"$cfg" 2>/dev/null || true
+                systemctl reload watashi-haproxy 2>/dev/null || true
+            fi
+        ) 9>"$WS_STATE_DIR/challenge.lock"
+    fi
+}
+
 # watashi: apply_configs runs this script every time. without a cooldown a
 # broken domain asks four CAs on every apply and gets the whole account rate
 # limited. a deliberate request from the panel sets WS_SSL_FORCE=1 and skips it.
@@ -341,7 +356,7 @@ function try_get_cert_with_ca() {
     # watashi v12.3.39dev: asked for by hand from the domain card. acme.sh keeps its own
     # idea of when a certificate is due, and without --force it answers "not
     # yet" for a certificate this server may not even be serving.
-    if [ "${WS_SSL_REISSUE:-0}" = "1" ]; then
+    if [ "${WS_SSL_REISSUE:-0}" = "1" ] || ! ws_store_cert_good "$DOMAIN"; then
         args+=(--force)
     fi
     if [ "$CHALLENGE" = "cloudflare-dns" ]; then
@@ -353,6 +368,9 @@ function try_get_cert_with_ca() {
         fi
         export CF_Token="$token"
         args+=(--dns dns_cf)
+    elif [ "$CHALLENGE" = "tls-alpn" ]; then
+        ws_alpn_challenge_prepare
+        args+=(--alpn --tlsport 10443)
     else
         ws_http_challenge_prepare
         # watashi v12.2.130j: a warning, never a refusal. A panel without a certificate
@@ -372,8 +390,19 @@ function try_get_cert_with_ca() {
 
     for ((i = 1; i <= MAX_RETRIES; i++)); do
         echo "Attempt $i of $MAX_RETRIES..."
-        ws_acme_run "$ATTEMPT_TIMEOUT" "${args[@]}"
-        result=$?
+        if [ "$CHALLENGE" = "tls-alpn" ]; then
+            local alpn_fd=""
+            mkdir -p "$WS_STATE_DIR" 2>/dev/null || true
+            if exec {alpn_fd}>"$WS_STATE_DIR/alpn.lock"; then
+                flock -w 180 "$alpn_fd" 2>/dev/null || true
+            fi
+            ws_acme_run "$ATTEMPT_TIMEOUT" "${args[@]}"
+            result=$?
+            [ -n "$alpn_fd" ] && exec {alpn_fd}>&-
+        else
+            ws_acme_run "$ATTEMPT_TIMEOUT" "${args[@]}"
+            result=$?
+        fi
         if [ $result -eq 124 ]; then
             echo "The authority did not answer within ${ATTEMPT_TIMEOUT}s, giving up on this attempt"
         fi
@@ -608,6 +637,34 @@ function ws_served_is_ours() {
     [ -n "$here" ] && [ "$here" = "$there" ]
 }
 
+function ws_domain_mode() {
+    local d="$1" cfg="/opt/watashi-manager/current.json"
+    [ -s "$cfg" ] && command -v jq >/dev/null 2>&1 || return 0
+    jq -r --arg d "$d" '.domains[]? | select((.domain // "" | ascii_downcase) == ($d | ascii_downcase)) | .mode // empty' "$cfg" 2>/dev/null | head -n1
+}
+
+function ws_probe_tls_target() {
+    local d="$1" crt="$WS_SSL_DIR/$1.crt" here="" there=""
+    if [ ! -s "$crt" ]; then
+        get_self_signed_cert "$d" >/dev/null 2>&1 || true
+        systemctl reload watashi-haproxy 2>/dev/null || true
+    fi
+    here=$(echo | timeout 5 openssl s_client -servername "$d" -connect "127.0.0.1:443" 2>/dev/null |
+        openssl x509 -noout -fingerprint -sha256 2>/dev/null)
+    if [ -z "$here" ] && [ -s "$crt" ]; then
+        here=$(openssl x509 -in "$crt" -noout -fingerprint -sha256 2>/dev/null)
+    fi
+    there=$(echo | timeout 8 openssl s_client -servername "$d" -connect "$d:443" 2>/dev/null |
+        openssl x509 -noout -fingerprint -sha256 2>/dev/null)
+    if [ -z "$there" ]; then
+        echo "dead"
+    elif [ -n "$here" ] && [ "$here" = "$there" ]; then
+        echo "ours"
+    else
+        echo "other"
+    fi
+}
+
 # watashi v12.2.130bk: days left on the certificate the remote endpoint really
 # serves, and only when a normal client would trust it. curl verifies the
 # chain and the hostname, so a self signed answer fails here as it should.
@@ -638,6 +695,7 @@ function ws_foreign_tls() {
     # watashi v12.3.39dev: the button on the domain card means "ask now", whatever an
     # earlier probe concluded.
     [ "${WS_SSL_REISSUE:-0}" = "1" ] && return 1
+    [ "$(ws_domain_mode "$d")" = "relay" ] && return 1
     mkdir -p "$WS_STATE_DIR" 2>/dev/null
     cache="$WS_STATE_DIR/foreigntls-$d"
     if ws_points_here "$d"; then
@@ -832,7 +890,7 @@ function ws_get_cert_now() {
     # Verify DNS resolution
     # watashi v12.3.39dev: every record of the domain and every address of this server,
     # where the old lines showed one of each and called them "the" address.
-    local found dns_note="" skip_http=0
+    local found dns_note="" skip_http=0 use_alpn=0
     found=$(ws_domain_addrs "$DOMAIN" | xargs)
     echo "DNS Resolution: $DOMAIN -> ${found:-nothing}"
     echo "Server IPs: $(ws_server_addrs | xargs)"
@@ -849,8 +907,9 @@ function ws_get_cert_now() {
         dns_note="dns-none"
         skip_http=1
     elif ! ws_points_here "$DOMAIN"; then
-        echo "WARNING: none of these addresses belongs to this server."
-        dns_note="dns-elsewhere"
+        local dom_mode http_ok=0 tls_target=""
+        dom_mode=$(ws_domain_mode "$DOMAIN")
+        echo "WARNING: none of these addresses belongs to this server${dom_mode:+ (mode: $dom_mode)}."
         # watashi v12.3.39dev: a relay passes port 80 on to this server, and then the
         # authority can still read the challenge. When the machine at that
         # address does not hand out our files (a server restored from a
@@ -859,12 +918,58 @@ function ws_get_cert_now() {
         # each, and spend the failed validation quota of the account too.
         ws_http_challenge_prepare
         if ws_challenge_public "$DOMAIN"; then
-            echo "The machine at that address passes the challenge path on to this server, so the http challenge can work."
+            http_ok=1
+            echo "Port 80 check: the machine at $found passes the HTTP challenge path on to this server."
         else
-            echo "The machine at that address does not serve the challenge files of this server, so no authority can check the domain over http."
-            echo "Point the domain at this server (or let the relay pass port 80 on), then ask again."
-            skip_http=1
+            echo "Port 80 check: the machine at $found does not serve the HTTP challenge files of this server."
         fi
+        tls_target=$(ws_probe_tls_target "$DOMAIN")
+        case "$tls_target" in
+        ours)
+            echo "Port 443 check: $DOMAIN ($found) forwards TLS on port 443 to this server (certificate fingerprint matches)."
+            use_alpn=1
+            if [ "$http_ok" -eq 1 ]; then
+                dns_note="ca"
+            else
+                echo "Port 80 is not forwarded from the relay/tunnel to this server; trying TLS-ALPN-01 over port 443."
+                dns_note="relay-no-80"
+                if [ "${WS_SSL_REISSUE:-0}" != "1" ]; then
+                    skip_http=1
+                fi
+            fi
+            ;;
+        other)
+            echo "Port 443 check: $DOMAIN ($found) answers TLS on port 443 with ANOTHER server's certificate (not forwarded to this server)."
+            if [ "$http_ok" -eq 1 ]; then
+                dns_note="ca"
+            else
+                skip_http=1
+                if [ "$dom_mode" = "relay" ]; then
+                    echo "ERROR: Relay tunnel on $found is not forwarding traffic to this server (it may still point to an old server IP, or terminates TLS itself)."
+                    dns_note="relay-wrong-target"
+                else
+                    echo "The machine at $found does not forward port 80 or port 443 to this server."
+                    dns_note="dns-elsewhere-other"
+                fi
+            fi
+            ;;
+        *)
+            echo "Port 443 check: $DOMAIN ($found) did not complete a TLS handshake on port 443."
+            if [ "$http_ok" -eq 1 ]; then
+                dns_note="ca"
+            else
+                skip_http=1
+                if [ "$dom_mode" = "relay" ]; then
+                    echo "ERROR: Relay server ($found) is not answering on port 443 and does not forward port 80 to this server."
+                    dns_note="relay-no-443"
+                else
+                    echo "The machine at $found does not serve the challenge files of this server, so no authority can check the domain."
+                    echo "Point the domain at this server (or forward ports 80 and 443 from the relay), then ask again."
+                    dns_note="dns-elsewhere"
+                fi
+            fi
+            ;;
+        esac
     else
         local stray="" one mine
         mine=" $(ws_server_addrs) "
@@ -874,6 +979,10 @@ function ws_get_cert_now() {
         if [ -n "$stray" ]; then
             echo "WARNING: these addresses of $DOMAIN are not on this server:$stray. An authority that picks one of them fails the http challenge."
             dns_note="dns-mixed"
+        fi
+        ws_http_challenge_prepare
+        if ! ws_challenge_public "$DOMAIN"; then
+            use_alpn=1
         fi
     fi
 
@@ -897,9 +1006,15 @@ function ws_get_cert_now() {
     if [ -n "$cf_token" ]; then
         challenges+=("cloudflare-dns")
     fi
+    if [ "$use_alpn" = "1" ] && [ "$dns_note" = "relay-no-80" ]; then
+        challenges+=("tls-alpn")
+    fi
     # watashi v12.3.39dev: left out when nobody out there can hand our files to the authority
     if [ "$skip_http" != "1" ]; then
         challenges+=("http")
+    fi
+    if [ "$use_alpn" = "1" ] && [ "$dns_note" != "relay-no-80" ]; then
+        challenges+=("tls-alpn")
     fi
 
     local cert_obtained=0

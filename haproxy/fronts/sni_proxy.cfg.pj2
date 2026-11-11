@@ -8,6 +8,7 @@ frontend https-in
     # option dontlognull
     tcp-request inspect-delay 5s
     tcp-request content accept if { req.ssl_hello_type 1 }
+    use_backend acme_alpn if { req.ssl_alpn acme-tls/1 }
     acl tls1_2 req.ssl_ver 3.3
     acl tls1_3 req.ssl_ver 3.4
     #SNI PROXY

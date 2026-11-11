@@ -217,17 +217,19 @@ function build_args() {
     # the right key but current.json is still stale. ws_after_restore()
     # writes the sidecar warp-key.conf so the engine inherits the
     # correct key without waiting for the next apply.
-    key=$(hconfig warp_plus_code)
-    if [ -z "$key" ] || [ "$key" = "-" ]; then
-        sidecar="$(pwd)/warp-key.conf"
-        if [ -f "$sidecar" ]; then
-            key=$(head -1 "$sidecar" 2>/dev/null | tr -d '[:space:]')
-            [ -n "$key" ] && echo "- WARP: key loaded from post-restore sidecar." >&2
+    if [ "${WS_WARP_NO_KEY:-0}" != "1" ]; then
+        key=$(hconfig warp_plus_code)
+        if [ -z "$key" ] || [ "$key" = "-" ]; then
+            sidecar="$(pwd)/warp-key.conf"
+            if [ -f "$sidecar" ]; then
+                key=$(head -1 "$sidecar" 2>/dev/null | tr -d '[:space:]')
+                [ -n "$key" ] && echo "- WARP: key loaded from post-restore sidecar." >&2
+            fi
         fi
-    fi
-    if [ -n "$key" ] && [ "$key" != "-" ]; then
-        echo "-k" >>"$out"
-        echo "$key" >>"$out"
+        if [ -n "$key" ] && [ "$key" != "-" ]; then
+            echo "-k" >>"$out"
+            echo "$key" >>"$out"
+        fi
     fi
     chmod 600 "$out" 2>/dev/null
 }
@@ -262,6 +264,9 @@ function explain_failure() {
         error "- Cloudflare answered 429 (too many requests) to this server IP."
         error "  Registrations from this IP are rate limited. Wait and try again,"
         error "  or put a working WARP key in the panel settings."
+    elif grep -q 'updating account license key' <<<"$j" && grep -q '400 Bad Request' <<<"$j"; then
+        error "- Cloudflare rejected the WARP+ license key (400 Bad Request)."
+        error "  Clear or replace the WARP+ key in the panel settings."
     elif grep -qi 'context deadline\|timeout\|i/o timeout' <<<"$j"; then
         error "- The engine could not reach any WARP endpoint (timeout)."
         error "  Set IPV=4 in engine.conf if this server has no IPv6, or keep SCAN=1."
@@ -275,6 +280,13 @@ function explain_failure() {
     fi
 }
 
+function ws_bad_license_key() {
+    local j
+    grep -qx -- "-k" engine.args 2>/dev/null || return 1
+    j=$(journalctl -u watashi-warp.service -n 30 --no-pager 2>/dev/null)
+    grep -q 'updating account license key' <<<"$j" && grep -q '400 Bad Request' <<<"$j"
+}
+
 # watashi v12.2.130v: one restart and the wait that goes with it.
 function ws_start_and_wait() {
     local i
@@ -282,6 +294,9 @@ function ws_start_and_wait() {
     for i in $(seq 1 "$WAIT"); do
         if warp_trace; then
             return 0
+        fi
+        if ws_bad_license_key; then
+            return 1
         fi
         if ! systemctl is-active --quiet watashi-warp.service; then
             # no point waiting on a service that already gave up
@@ -349,6 +364,18 @@ function bring_up() {
     if ws_start_and_wait; then
         ws_remember_endpoint
         return 0
+    fi
+    # If Cloudflare rejected the WARP+ license key with 400 Bad Request, fall
+    # back to a free WARP identity so the node still comes up.
+    if ws_bad_license_key; then
+        warning "- Cloudflare rejected the WARP+ license key (400 Bad Request); falling back to a free WARP account."
+        rm -rf "$CACHE/primary" "$(pwd)/warp-key.conf" 2>/dev/null
+        WS_WARP_NO_KEY=1 build_args engine.args
+        chmod 600 engine.args 2>/dev/null
+        if ws_start_and_wait; then
+            ws_remember_endpoint
+            return 0
+        fi
     fi
     # The remembered address is never allowed to be the reason WARP is
     # down: if the start that used it failed, it is thrown away and the

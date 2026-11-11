@@ -50,7 +50,7 @@ if [[ "$ONLY_IPV4" == true ]]; then
     INT_STAT_STR="Disable"
 fi
 
-declare -a excluded_interfaces=("warp" "lo")
+declare -a excluded_interfaces=("warp" "lo" "watashiwg" "hiddifywg" "watashi-awg")
 
 for interface_name in $(ip link | awk -F': ' '$2 ~ /^[[:alnum:]]+$/ {print $2}'); do
     if [[ " ${excluded_interfaces[@]} " =~ " ${interface_name} " ]]; then

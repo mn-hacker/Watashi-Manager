@@ -134,9 +134,9 @@ else
 fi
 
 # Restart ssh service (Ubuntu 24.04 uses ssh.service, older uses sshd.service)
-if systemctl list-units --type=service | grep -q 'sshd.service'; then
+if systemctl list-units --type=service --no-pager 2>/dev/null | grep -q 'sshd.service'; then
     sudo systemctl restart sshd.service 2>/dev/null || true
-elif systemctl list-units --type=service | grep -q 'ssh.service'; then
+elif systemctl list-units --type=service --no-pager 2>/dev/null | grep -q 'ssh.service'; then
     sudo systemctl restart ssh.service 2>/dev/null || true
 fi
 
@@ -242,7 +242,7 @@ service cron reload >/dev/null 2>&1 || true
 if [ "$MODE" != "docker" ]; then
     ws_v6_ifaces=""
     for ws_if in $(ip link | awk -F': ' '$2 ~ /^[[:alnum:]]+$/ {print $2}'); do
-        case " warp lo " in
+        case " warp lo watashiwg hiddifywg watashi-awg " in
             *" $ws_if "*) continue ;;
         esac
         ws_v6_ifaces="$ws_v6_ifaces $ws_if"
@@ -259,15 +259,23 @@ if [ "$MODE" != "docker" ]; then
         ws_v6_was_off=1
     fi
 
+    # all, default and lo stay enabled so loopback and internal tunnel interfaces
+    # (watashiwg, watashi-awg, warp) can always assign their ULA IPv6 addresses;
+    # physical interfaces in ws_v6_ifaces follow the only_ipv4 switch below.
+    sysctl -q -w net.ipv6.conf.all.disable_ipv6=0 2>/dev/null
+    sysctl -q -w net.ipv6.conf.default.disable_ipv6=0 2>/dev/null
+    sysctl -q -w net.ipv6.conf.lo.disable_ipv6=0 2>/dev/null
+    for ws_tun in watashiwg hiddifywg watashi-awg; do
+        if [ -d "/proc/sys/net/ipv6/conf/$ws_tun" ]; then
+            sysctl -q -w "net.ipv6.conf.$ws_tun.disable_ipv6=0" 2>/dev/null
+        fi
+    done
 {% if hconfigs['only_ipv4'] %}
     ws_v6_state=1
     ws_v6_word="disabled"
 {% else %}
     ws_v6_state=0
     ws_v6_word="enabled"
-    sysctl -q -w net.ipv6.conf.all.disable_ipv6=0 2>/dev/null
-    sysctl -q -w net.ipv6.conf.default.disable_ipv6=0 2>/dev/null
-    sysctl -q -w net.ipv6.conf.lo.disable_ipv6=0 2>/dev/null
 {% endif %}
     ws_v6_conf=""
     for ws_if in $ws_v6_ifaces; do

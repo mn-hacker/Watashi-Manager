@@ -122,3 +122,6 @@ backend proxy_stats_api_backend
     mode http
     http-request set-path %[path,regsub(^/{{ hconfigs['proxy_path_admin'] }}/proxy-stats/api/,/)]
     server proxy_stats_api 127.0.0.1:16756
+
+backend acme_alpn
+    server acme 127.0.0.1:10443
