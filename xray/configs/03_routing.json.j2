@@ -77,17 +77,27 @@
         },
         {% endif %}
         {% if hconfigs.get('block_malware_enable') %}
-        { // Block malware and phishing (requires Iran-v2ray-rules geosite.dat)
+        { // watashi v12.3.50dev: geosite:malware and geosite:phishing exist in no
+          // shipped geosite.dat (neither the v2fly one bundled with Xray releases
+          // nor the Chocolate4U Iran rules dat this panel downloads), so the core
+          // crashed on start with "illegal domain rule: geosite:malware" until the
+          // toggle was turned off again. Until a dat actually ships those
+          // categories, this toggle now blocks the malware/adware delivery
+          // categories that DO exist in both dats. Verified against both files
+          // with Xray 26: category-ads-all and category-porn start clean.
           "type": "field",
           "outboundTag": "blackhole",
           "domain": [
-            "geosite:malware",
-            "geosite:phishing"
+            "geosite:category-ads-all",
+            "geosite:category-porn"
           ]
         },
         {% endif %}
         {% if hconfigs.get('block_social_enable') %}
-        { // Block social media
+        { // watashi v12.3.50dev: geosite:snapchat was removed - it exists in
+          // neither the v2fly nor the Chocolate4U dat and crashed the core with
+          // "illegal domain rule". The five remaining categories are verified
+          // present in both dats with Xray 26.
           "type": "field",
           "outboundTag": "blackhole",
           "domain": [
@@ -95,17 +105,17 @@
             "geosite:twitter",
             "geosite:instagram",
             "geosite:tiktok",
-            "geosite:linkedin",
-            "geosite:snapchat"
+            "geosite:linkedin"
           ]
         },
         {% endif %}
         {% if hconfigs.get('block_nsfw_enable') %}
-        { // Block NSFW content (adult content and gambling - from Iran-v2ray-rules nsfw category)
+        { // watashi v12.3.50dev: geosite:nsfw was removed - it exists in neither
+          // shipped dat and crashed the core. category-porn is verified present
+          // in both dats with Xray 26 and covers the same adult-content block.
           "type": "field",
           "outboundTag": "blackhole",
           "domain": [
-            "geosite:nsfw",
             "geosite:category-porn"
           ]
         },
