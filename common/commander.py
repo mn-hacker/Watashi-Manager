@@ -613,6 +613,208 @@ def custom_inbounds(action: str):
     print(json.dumps(out))
 
 
+WS_OUT_ACTIONS = ('test', 'test-singbox')  # watashi v12.3.55dev
+WS_OUT_MAX = 262144
+WS_RULE_ACTIONS = ('test', 'test-singbox')  # watashi v12.3.56dev
+WS_RULE_MAX = 262144
+WS_CONNECT_MAX = 262144  # watashi v12.3.57dev: one outbound per run
+WS_CONNECT_TIMEOUT = 25  # seconds for the whole probe
+
+
+def ws_probe(text: str) -> dict:
+    """The one-outbound candidate the panel sends for a live connect test."""
+    import json as _json
+    assert len(text) <= WS_CONNECT_MAX, "Error: the candidate is too large"
+    data = _json.loads(text)
+    assert isinstance(data, dict) and 'outbound' in data, "Error: the candidate has no outbound"
+    assert isinstance(data['outbound'], dict), "Error: the outbound is not an object"
+    return data
+
+
+def ws_free_port() -> int:
+    import socket
+    with socket.socket() as s:
+        s.bind(('127.0.0.1', 0))
+        return s.getsockname()[1]
+
+
+@cli.command('test-connect')
+@click.option('--core', '-c', type=str, help='xray or singbox', required=True)
+def test_connect(core: str):
+    """watashi v12.3.57dev: a live probe of one hand built outbound. The core
+    runs for a few seconds with the candidate as its only real outbound plus a
+    local socks listener pointed at it; the probe asks the outbound's own exit
+    (ipify) through that socks, so the answer is the exit IP the core really
+    used and the country it sits in — not a guess from the server address.
+    The exit is 0 with a JSON report on stdout when the tunnel worked."""
+    import json
+    import tempfile
+    import subprocess
+    import socket
+    import urllib.request
+    assert core in ('xray', 'singbox'), f"Error: {core} is not a core"
+    candidate = ws_probe(click.get_text_stream('stdin').read(WS_CONNECT_MAX + 1))
+    outbound = candidate['outbound']
+    tag = outbound.get('tag', 'probe')
+    port = ws_free_port()
+    if core == 'xray':
+        config = {'log': {'loglevel': 'warning'},
+                  'inbounds': [{'tag': 'probe-in', 'listen': '127.0.0.1', 'port': port, 'protocol': 'socks',
+                                'settings': {'auth': 'noauth', 'udp': False}}],
+                  'outbounds': [outbound, {'tag': 'direct', 'protocol': 'freedom'}],
+                  'routing': {'domainStrategy': 'AsIs',
+                              'rules': [{'type': 'field', 'ip': ['1.1.1.1'], 'outboundTag': 'direct'},
+                                        {'type': 'field', 'domain': ['domain:ipify.org'], 'outboundTag': 'direct'}]}}
+        # the probe must ride the candidate, not direct: only the tunnel's own
+        # answer matters, so no allowlist trick — the socks hands everything to
+        # the first outbound (the candidate is the default route of the core).
+        config['routing']['rules'] = []
+        tmp = tempfile.mkdtemp(prefix='watashi-probe-')
+        with open(os.path.join(tmp, '01_probe.json'), 'w') as handle:
+            json.dump(config, handle)
+        proc = subprocess.Popen([os.path.join(WATASHI_DIR, 'xray/bin/xray'), 'run', '-confdir', tmp],
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    else:
+        config = {'log': {'level': 'warn'},
+                  'inbounds': [{'type': 'socks', 'tag': 'probe-in', 'listen': '127.0.0.1',
+                                'listen_port': port}],
+                  'outbounds': [outbound, {'type': 'direct', 'tag': 'direct'}],
+                  'route': {'auto_detect_interface': True, 'final': tag}}
+        tmp = tempfile.mkdtemp(prefix='watashi-probe-')
+        with open(os.path.join(tmp, '01_probe.json'), 'w') as handle:
+            json.dump(config, handle)
+        binary = os.path.join(WATASHI_DIR, 'singbox/sing-box')
+        if not os.path.exists(binary):
+            print(json.dumps({'ok': False, 'exit_ip': '', 'country': '', 'latency_ms': None,
+                              'log': 'Error: the sing-box binary is not installed on this server'}))
+            raise SystemExit(1)
+        proc = subprocess.Popen([binary, 'run', '-c', os.path.join(tmp, '01_probe.json')],
+                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    report = {'ok': False, 'exit_ip': '', 'country': '', 'latency_ms': None, 'log': ''}
+    try:
+        import time
+        time.sleep(1.2)  # the core's warm up
+        deadline = time.time() + (WS_CONNECT_TIMEOUT - 3)
+        while time.time() < deadline:
+            try:
+                started = time.time()
+                # the socks of the probe core; ipify answers with the exit IP
+                proxy = urllib.request.ProxyHandler({'http': f'socks5h://127.0.0.1:{port}',
+                                                     'https': f'socks5h://127.0.0.1:{port}'})
+                opener = urllib.request.build_opener(proxy)
+                with opener.open('https://api.ipify.org?format=json', timeout=6) as answer:
+                    body = json.loads(answer.read().decode())
+                report['exit_ip'] = str(body.get('ip') or '')
+                report['latency_ms'] = int((time.time() - started) * 1000)
+                report['ok'] = bool(report['exit_ip'])
+                # the country: the free ipapi answer, best effort
+                if report['ok']:
+                    try:
+                        with opener.open(f'http://ip-api.com/json/{report["exit_ip"]}', timeout=6) as answer:
+                            geo = json.loads(answer.read().decode())
+                        report['country'] = str(geo.get('countryCode') or '')
+                    except Exception:
+                        pass
+                break
+            except Exception:
+                time.sleep(0.6)
+    finally:
+        proc.terminate()
+        try:
+            report['log'] = (proc.stdout.read() or '')[:500] if proc.stdout else ''
+        except Exception:
+            pass
+        try:
+            proc.wait(timeout=3)
+        except Exception:
+            proc.kill()
+    import shutil as _sh
+    _sh.rmtree(tmp, ignore_errors=True)
+    print(json.dumps(report))
+    raise SystemExit(0 if report['ok'] else 1)
+
+
+def ws_rule_candidate(text: str) -> dict:
+    """The routing file the panel sent, checked the way ws_out_candidate checks
+    the outbounds file."""
+    import json as _json
+    assert len(text) <= WS_RULE_MAX, "Error: the candidate is too large"
+    data = _json.loads(text)
+    assert isinstance(data, dict) and set(data) <= {'rules'}, "Error: the candidate is not a routing file"
+    rules = data.get('rules', [])
+    assert isinstance(rules, list) and len(rules) <= 500, "Error: the candidate has too many rules"
+    return data
+
+
+@cli.command('custom-routes')
+@click.option('--action', '-a', type=str, help='test or test-singbox', required=True)
+def custom_routes(action: str):
+    """watashi v12.3.56dev: the root side of the Routing page. The candidate is
+    a full routing section; the check runs the same binary on a copy of the
+    live confdir with the candidate swapped in, so a bad rule is caught before
+    an apply would ever see it."""
+    import json
+    import tempfile
+    import glob
+    assert action in WS_RULE_ACTIONS, f"Error: {action} is not an action of custom-routes"
+    core = 'singbox' if action == 'test-singbox' else 'xray'
+    data = ws_rule_candidate(click.get_text_stream('stdin').read(WS_RULE_MAX + 1))
+    configs = os.path.join(WATASHI_DIR, 'singbox/configs' if core == 'singbox' else 'xray/configs')
+    with tempfile.TemporaryDirectory(prefix='watashi-route-') as tmp:
+        for one in glob.glob(os.path.join(configs, '*.json')):
+            shutil.copy(one, tmp)
+        with open(os.path.join(tmp, '03_routing_99_custom.json'), 'w') as handle:
+            json.dump(data, handle)
+        if core == 'singbox':
+            done = subprocess.run([os.path.join(WATASHI_DIR, 'singbox/sing-box'), 'check', '-C', tmp],
+                                  capture_output=True, text=True, timeout=60, cwd=tmp)
+        else:
+            done = subprocess.run([os.path.join(WATASHI_DIR, 'xray/bin/xray'), 'run', '-test', '-confdir', tmp],
+                                  capture_output=True, text=True, timeout=60)
+    print((done.stdout or '') + (done.stderr or ''))
+    raise SystemExit(0 if done.returncode == 0 else 1)
+
+
+def ws_out_candidate(text: str) -> dict:
+    """The outbounds file the panel sent, checked the way ws_custom_candidate
+    checks the inbounds file."""
+    import json as _json
+    assert len(text) <= WS_OUT_MAX, "Error: the candidate is too large"
+    data = _json.loads(text)
+    assert isinstance(data, dict) and set(data) <= {'outbounds'}, "Error: the candidate is not an outbounds file"
+    rows = data.get('outbounds', [])
+    assert isinstance(rows, list) and len(rows) <= 100, "Error: the candidate has too many outbounds"
+    return data
+
+
+@cli.command('custom-outbounds')
+@click.option('--action', '-a', type=str, help='test or test-singbox', required=True)
+def custom_outbounds(action: str):
+    """watashi v12.3.55dev: the root side of the Outbounds page. Only the test
+    runs here — the apply of an outbound is the apply of the whole core, since
+    the rows ride in the same config file the render writes."""
+    import json
+    import tempfile
+    import glob
+    assert action in WS_OUT_ACTIONS, f"Error: {action} is not an action of custom-outbounds"
+    core = 'singbox' if action == 'test-singbox' else 'xray'
+    data = ws_out_candidate(click.get_text_stream('stdin').read(WS_OUT_MAX + 1))
+    configs = os.path.join(WATASHI_DIR, 'singbox/configs' if core == 'singbox' else 'xray/configs')
+    with tempfile.TemporaryDirectory(prefix='watashi-outbound-') as tmp:
+        for one in glob.glob(os.path.join(configs, '*.json')):
+            shutil.copy(one, tmp)
+        with open(os.path.join(tmp, '90_outbounds_99_custom.json' if core == 'xray' else '90_outbounds_99_custom.json'), 'w') as handle:
+            json.dump(data, handle)
+        if core == 'singbox':
+            done = subprocess.run([os.path.join(WATASHI_DIR, 'singbox/sing-box'), 'check', '-C', tmp],
+                                  capture_output=True, text=True, timeout=60, cwd=tmp)
+        else:
+            done = subprocess.run([os.path.join(WATASHI_DIR, 'xray/bin/xray'), 'run', '-test', '-confdir', tmp],
+                                  capture_output=True, text=True, timeout=60)
+    print((done.stdout or '') + (done.stderr or ''))
+    raise SystemExit(0 if done.returncode == 0 else 1)
+
+
 @cli.command('truncate')
 @click.option('--file', '-f', type=str, help='The log file to truncate', required=True)
 def truncate(file: str):
