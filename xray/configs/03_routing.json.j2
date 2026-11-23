@@ -26,11 +26,16 @@
 {% set ws_raw = hconfigs.get('warp_presets') %}
 {% set ws_raw = 'ir' if ws_raw is none else ws_raw | string %}
 {% set ws_presets = ws_raw.split(',') | map('trim') | reject('equalto', '') | reject('equalto', 'none') | list %}
+{# watashi v12.3.77dev: warp_excluded holds the sites the admin unticked
+   inside the chosen groups. A group's fresh upstream sites still ride in
+   automatically — only what the panel knows could be unticked. #}
+{% set ws_exc = hconfigs.get('warp_excluded') or '' %}
+{% set ws_excluded = ws_exc | string | split(',') | map('trim') | reject('equalto', '') | list %}
 {% set ws_geo = [] %}
 {% set ws_dom = [] %}
 {% for ws_g in ws_presets if ws_g in ws_groups %}
-{% for ws_s in ws_groups[ws_g]['geo'] if ws_s not in ws_geo %}{% set ws_x = ws_geo.append(ws_s) %}{% endfor %}
-{% for ws_d in ws_groups[ws_g]['dom'] if ws_d not in ws_dom %}{% set ws_x = ws_dom.append(ws_d) %}{% endfor %}
+{% for ws_s in ws_groups[ws_g]['geo'] if ws_s not in ws_geo and ws_s not in ws_excluded %}{% set ws_x = ws_geo.append(ws_s) %}{% endfor %}
+{% for ws_d in ws_groups[ws_g]['dom'] if ws_d not in ws_dom and ws_d not in ws_excluded %}{% set ws_x = ws_dom.append(ws_d) %}{% endfor %}
 {% endfor %}
 {# The local sites go THROUGH the node on purpose: the real address of this
    server must never touch an Iranian site, or that site blocks it. With the
