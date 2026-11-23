@@ -201,9 +201,9 @@ function set_key() {
     case "$key" in
     MODE)
         case "$value" in
-        warp | gool | cfon) ;;
+        warp | gool | cfon | masque) ;;
         *)
-            echo "- MODE must be warp, gool or cfon."
+            echo "- MODE must be warp, gool, cfon or masque."
             return 1
             ;;
         esac

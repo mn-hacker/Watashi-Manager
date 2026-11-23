@@ -63,7 +63,7 @@ fi
 if [ ! -f "$CONF" ]; then
     {
         echo "# watashi WARP engine settings"
-        echo "# MODE: warp = plain WARP, gool = warp in warp, cfon = psiphon"
+        echo "# MODE: warp = plain WARP, gool = warp in warp, cfon = psiphon, masque = MASQUE (HTTP/3)"
         echo "MODE=warp"
         echo "# COUNTRY is only used by cfon. Valid: AT AU BE BG CA CH CZ DE DK"
         echo "# EE ES FI FR GB HR HU IE IN IT JP LV NL NO PL PT RO RS SE SG SK US"
@@ -104,6 +104,17 @@ WS_WD_INTERVAL=300
 WS_WD_THRESHOLD=2
 WS_WD_GRACE=60
 source "$CONF"
+
+# watashi v12.3.73dev: the MASQUE engine is a second binary with its own
+# argument language. It is installed next to warp-plus by the Watashi-Warp
+# kit (build-masque.sh); the mode alone decides which one runs.
+if [ "$MODE" = "masque" ]; then
+    BIN="./watashi-masque"
+    if [ ! -x "$BIN" ]; then
+        error "- MODE=masque but ./watashi-masque is not installed. Build and install it with the Watashi-Warp kit: bash build-masque.sh --install"
+        exit 1
+    fi
+fi
 
 # watashi v12.3.33dev: Smart DNS — DNS_MODE drives the actual --dns argument.
 # cloudflare = 1.1.1.1 (through warp), google = 8.8.8.8, system = server default.
@@ -177,6 +188,24 @@ function ws_remember_endpoint() {
 function build_args() {
     local key out="${1:-engine.args}"
     : >"$out"
+    # watashi v12.3.73dev: the MASQUE binary speaks a different argument
+    # language (a config file instead of a cache dir, no endpoint scan, no
+    # country) and understands none of the warp-plus flags below, so it
+    # gets its own short list and returns early.
+    if [ "$MODE" = "masque" ]; then
+        {
+            echo "-c"
+            echo "$(pwd)/$CACHE/masque.json"
+            echo "-b"
+            echo "127.0.0.1"
+            echo "-p"
+            echo "$PORT"
+            echo "--dns"
+            echo "${DNS:-1.1.1.1}"
+        } >>"$out"
+        chmod 600 "$out" 2>/dev/null
+        return 0
+    fi
     {
         echo "-b"
         echo "127.0.0.1:$PORT"

@@ -224,6 +224,45 @@ else
     exit 1
 fi
 
+# 1b) the MASQUE engine. A second, optional binary: the panel only needs it
+# when a node mode is switched to masque, so a failure here must never fail
+# the plain-warp install. Pinned in common/packages.lock like warp-plus.
+function install_masque() {
+    local ver tmp found
+    ver=$(get_latest_version watashi-masque "$(detect_arch)")
+    if [ -z "$ver" ]; then
+        warning "- WARP: watashi-masque is not pinned in common/packages.lock, MASQUE mode stays unavailable."
+        return 0
+    fi
+    if [ -x "./watashi-masque" ] && "./watashi-masque" version >/dev/null 2>&1; then
+        echo "- MASQUE engine is already installed: $(./watashi-masque version 2>&1 | head -n 1 | tr -d ' ')"
+        return 0
+    fi
+    tmp=$(mktemp -d) || return 0
+    if ! download_package watashi-masque "$tmp/watashi-masque.zip" "$ver" force; then
+        warning "- WARP: could not download watashi-masque $ver, MASQUE mode stays unavailable."
+        rm -rf "$tmp"
+        return 0
+    fi
+    if ! unzip -o -q "$tmp/watashi-masque.zip" -d "$tmp/work"; then
+        warning "- WARP: could not unpack the watashi-masque package."
+        rm -rf "$tmp"
+        return 0
+    fi
+    found=$(find "$tmp/work" -type f -name watashi-masque -print -quit 2>/dev/null)
+    if [ -z "$found" ]; then
+        warning "- WARP: no watashi-masque binary inside the package."
+        rm -rf "$tmp"
+        return 0
+    fi
+    [ -f "./watashi-masque" ] && cp -f ./watashi-masque ./watashi-masque.previous 2>/dev/null
+    install -m 755 "$found" ./watashi-masque
+    rm -rf "$tmp"
+    success "- Installed the MASQUE engine: $(./watashi-masque version 2>&1 | head -n 1 | tr -d ' ')"
+    return 0
+}
+install_masque
+
 # 2) the unit. daemon-reload comes BEFORE enable, otherwise systemd enables
 # the copy of the unit it had cached from the previous version.
 if ! cmp -s "$UNIT_SRC" "$UNIT_DST"; then

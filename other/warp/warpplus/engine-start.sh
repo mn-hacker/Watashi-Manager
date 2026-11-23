@@ -24,15 +24,29 @@ if [ ! -x "./warp-plus" ]; then
     exit 1
 fi
 
+# watashi v12.3.73dev: MODE decides the binary. masque runs the separate
+# usque-based engine and has no endpoint watchdog (nothing to rotate: the
+# identity lives in its config file and the endpoint comes from it).
+BIN="./warp-plus"
+MODE=$(grep -E '^MODE=' engine.conf 2>/dev/null | tail -n 1 | cut -d= -f2 | tr -d ' "'"'"'\r')
+if [ "$MODE" = "masque" ]; then
+    BIN="./watashi-masque"
+    WATCHDOG=""
+    if [ ! -x "$BIN" ]; then
+        echo "masque: ./$BIN is missing or not executable — install it with the Watashi-Warp kit (bash build-masque.sh --install)." >&2
+        exit 1
+    fi
+fi
+
 mapfile -t ARGS < "$ARGS_FILE"
 
-# ── start warp-plus in the background ────────────────────────────────────────
-./warp-plus "${ARGS[@]}" &
+# ── start the engine in the background ───────────────────────────────────────
+"$BIN" "${ARGS[@]}" &
 WARP_PID=$!
 
-# ── start watchdog alongside it ──────────────────────────────────────────────
+# ── start watchdog alongside it (warp-plus modes only) ───────────────────────
 WATCHDOG_PID=0
-if [ -x "$WATCHDOG" ]; then
+if [ -n "$WATCHDOG" ] && [ -x "$WATCHDOG" ]; then
     bash "$WATCHDOG" "$WARP_PID" &
     WATCHDOG_PID=$!
 else
