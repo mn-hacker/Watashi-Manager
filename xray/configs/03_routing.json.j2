@@ -30,7 +30,7 @@
    inside the chosen groups. A group's fresh upstream sites still ride in
    automatically — only what the panel knows could be unticked. #}
 {% set ws_exc = hconfigs.get('warp_excluded') or '' %}
-{% set ws_excluded = ws_exc | string | split(',') | map('trim') | reject('equalto', '') | list %}
+{% set ws_excluded = ws_exc.split(',') | map('trim') | reject('equalto', '') | list %}
 {% set ws_geo = [] %}
 {% set ws_dom = [] %}
 {% for ws_g in ws_presets if ws_g in ws_groups %}
@@ -59,7 +59,7 @@
     'openai:auth':    {'dom': ['auth.openai.com', 'auth0.com']}
 } %}
 {% set ws_cov_raw = hconfigs.get('warp_cover_rules') or '' %}
-{% set ws_cover_off = ws_cov_raw | string | split(',') | map('trim') | reject('equalto', '') | list %}
+{% set ws_cover_off = ws_cov_raw.split(',') | map('trim') | reject('equalto', '') | list %}
 {% set ws_direct_geo = [] %}
 {% set ws_direct_dom = [] %}
 {% for ws_c in ws_cover_off if ws_c in ws_cover_split %}
