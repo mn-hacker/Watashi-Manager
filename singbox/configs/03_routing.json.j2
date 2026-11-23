@@ -44,6 +44,34 @@
 {% for ws_s in ws_groups[ws_g]['geo'] if ws_s not in ws_geo and ws_s not in ws_excluded %}{% set ws_x = ws_geo.append(ws_s) %}{% endfor %}
 {% for ws_d in ws_groups[ws_g]['dom'] if ws_d not in ws_dom and ws_d not in ws_excluded %}{% set ws_x = ws_dom.append(ws_d) %}{% endfor %}
 {% endfor %}
+{# watashi v12.3.78dev: covers unticked INSIDE a riding rule-set. sing-box
+   takes the first matching rule too, so their direct rules go before the
+   group's WARP rules below; the geo ones need their rule_set tag declared
+   up in "rule_set" as well. #}
+{% set ws_cover_split = {
+    'google:youtube': {'geo': ['youtube']},
+    'google:gemini':  {'geo': ['google-gemini']},
+    'google:android': {'geo': ['firebase']},
+    'google:gmail':   {'dom': ['mail.google.com', 'gmail.com', 'googlemail.com']},
+    'google:drive':   {'dom': ['drive.google.com', 'docs.google.com']},
+    'google:play':    {'dom': ['play.google.com']},
+    'google:maps':    {'dom': ['maps.google.com', 'googleusercontent.com']},
+    'google:photos':  {'dom': ['photos.google.com']},
+    'google:cloud':   {'dom': ['cloud.google.com', 'console.cloud.google.com']},
+    'google:blogger': {'dom': ['blogger.com', 'blogspot.com']},
+    'openai:chatgpt': {'geo': ['openai']},
+    'openai:api':     {'dom': ['api.openai.com']},
+    'openai:sora':    {'dom': ['sora.com', 'sora.chatgpt.com']},
+    'openai:auth':    {'dom': ['auth.openai.com', 'auth0.com']}
+} %}
+{% set ws_cov_raw = hconfigs.get('warp_cover_rules') or '' %}
+{% set ws_cover_off = ws_cov_raw | string | split(',') | map('trim') | reject('equalto', '') | list %}
+{% set ws_direct_geo = [] %}
+{% set ws_direct_dom = [] %}
+{% for ws_c in ws_cover_off if ws_c in ws_cover_split %}
+{% for ws_g in ws_cover_split[ws_c]['geo'] if ws_g not in ws_direct_geo %}{% set ws_x = ws_direct_geo.append(ws_g) %}{% endfor %}
+{% for ws_d in ws_cover_split[ws_c]['dom'] if ws_d not in ws_direct_dom %}{% set ws_x = ws_direct_dom.append(ws_d) %}{% endfor %}
+{% endfor %}
 {# The local sites go THROUGH the node on purpose: the real address of this
    server must never touch an Iranian site, or that site blocks it. With the
    group switched off they are refused, exactly as when the node is off,
@@ -75,6 +103,15 @@
             "format":"binary",
             "update_interval":"1d",
             "url":"https://github.com/MetaCubeX/meta-rules-dat/raw/refs/heads/sing/geo/geosite/{{site}}.srs"
+         },
+         {% endfor %}
+         {% for dg in ws_direct_geo if dg in ws_geo %}
+         {
+            "tag":"geosite-{{dg}}",
+            "type":"remote",
+            "format":"binary",
+            "update_interval":"1d",
+            "url":"https://github.com/MetaCubeX/meta-rules-dat/raw/refs/heads/sing/geo/geosite/{{dg}}.srs"
          },
          {% endfor %}
          {% if hconfigs['block_ads_enable'] %}
@@ -219,6 +256,35 @@
              ]
         },
         {% if hconfigs['warp_mode'] != 'disable' %}
+          {% if ws_direct_geo or ws_direct_dom %}
+          {% set ws_par_names = [] %}
+          {% for ws_g in ws_presets if ws_g in ws_groups %}{% set ws_x = ws_par_names.append(ws_g) %}{% endfor %}
+          {% set ws_ns = {'hit': False} %}
+          {% for ws_c in ws_cover_off if ws_c in ws_cover_split and ws_c.partition(':')[0] in ws_par_names %}{% set ws_x = ws_ns.update(hit=True) %}{% endfor %}
+          {% if ws_ns['hit'] %}
+          {# watashi v12.3.78dev: unticked covers go DIRECT first — first match wins #}
+          {% if ws_direct_geo %}
+          {
+              "outbound": "freedom",
+              "rule_set":[
+                {% for dg in ws_direct_geo %}
+                  "geosite-{{dg}}"{% if not loop.last %},{% endif %}
+                {% endfor %}
+              ]
+          },
+          {% endif %}
+          {% if ws_direct_dom %}
+          {
+              "outbound": "freedom",
+              "domain_suffix":[
+                {% for dd in ws_direct_dom %}
+                  "{{dd}}"{% if not loop.last %},{% endif %}
+                {% endfor %}
+              ]
+          },
+          {% endif %}
+          {% endif %}
+          {% endif %}
           {% if ws_geo %}
           {
               "outbound": "WARP",
