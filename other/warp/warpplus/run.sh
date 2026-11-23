@@ -194,6 +194,9 @@ function build_args() {
     # gets its own short list and returns early.
     if [ "$MODE" = "masque" ]; then
         {
+            # watashi v12.3.76dev: without the subcommand the flags land on the
+            # root command and the engine dies with "unknown shorthand flag: 'b'".
+            echo "watashi"
             echo "-c"
             echo "$(pwd)/$CACHE/masque.json"
             echo "-b"
@@ -426,7 +429,9 @@ function bring_up() {
 function engine_version() {
     [ -x "$BIN" ] || { echo "not installed"; return 0; }
     local v
-    v=$("$BIN" version 2>&1 | tr -d ' ' | head -n 1)
+    # watashi v12.3.76dev: the MASQUE engine logs a harmless config notice
+    # before its version; never show that log line as the version.
+    v=$("$BIN" version 2>&1 | grep -v 'Config file not found\|You may only use' | tr -d ' ' | head -n 1)
     echo "${v:-unknown version}"
 }
 

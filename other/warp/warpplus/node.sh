@@ -92,7 +92,7 @@ function job_report() {
 # ---------------------------------------------------------------- reading
 function engine_version() {
     [ -x "$BIN" ] || return 0
-    "$BIN" version 2>&1 | tr -d ' ' | head -n 1
+    "$BIN" version 2>&1 | grep -v 'Config file not found\|You may only use' | tr -d ' ' | head -n 1
 }
 
 function unit_state() {

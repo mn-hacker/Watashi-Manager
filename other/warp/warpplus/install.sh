@@ -235,7 +235,7 @@ function install_masque() {
         return 0
     fi
     if [ -x "./watashi-masque" ] && "./watashi-masque" version >/dev/null 2>&1; then
-        echo "- MASQUE engine is already installed: $(./watashi-masque version 2>&1 | head -n 1 | tr -d ' ')"
+        echo "- MASQUE engine is already installed: $(./watashi-masque version 2>/dev/null | head -n 1 | tr -d ' ')"
         return 0
     fi
     tmp=$(mktemp -d) || return 0
@@ -258,7 +258,7 @@ function install_masque() {
     [ -f "./watashi-masque" ] && cp -f ./watashi-masque ./watashi-masque.previous 2>/dev/null
     install -m 755 "$found" ./watashi-masque
     rm -rf "$tmp"
-    success "- Installed the MASQUE engine: $(./watashi-masque version 2>&1 | head -n 1 | tr -d ' ')"
+    success "- Installed the MASQUE engine: $(./watashi-masque version 2>/dev/null | head -n 1 | tr -d ' ')"
     return 0
 }
 install_masque
