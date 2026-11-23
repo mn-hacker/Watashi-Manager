@@ -105,7 +105,7 @@
             "url":"https://github.com/MetaCubeX/meta-rules-dat/raw/refs/heads/sing/geo/geosite/{{site}}.srs"
          },
          {% endfor %}
-         {% for dg in ws_direct_geo if dg in ws_geo %}
+         {% for dg in ws_direct_geo %}
          {
             "tag":"geosite-{{dg}}",
             "type":"remote",
